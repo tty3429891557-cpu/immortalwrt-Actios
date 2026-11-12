@@ -24,27 +24,45 @@ echo 'src-git store https://github.com/linkease/istore.git;main' >> feeds.conf.d
 # 调试
 # sed -i 's|src-git-full openstick https://github.com/lkiuyu/openstick-feeds.git|src-git-full openstick https://github.com/xuxin1955/openstick-feeds|g' feeds.conf.default
 
+
 # ============================================================
-# 修补：本源码快照的 feeds 里缺少 libffi 源码包
-# 现象：glib2 / python3 / ruby / wayland 等十几个包的 Makefile
-#       都声明依赖 libffi，但 feeds 里搜不到它，导致
-#       "Package glib2-gobject is missing dependencies ... libffi.so.8"
-# 做法：从 openwrt/packages 稀疏克隆 libs/libffi 注入 package/libs/
+# 修补：本源码快照缺少 libffi 包源
+# 事实核查：
+#   immortalwrt/packages  → 无 libs/libffi
+#   openwrt/packages      → 无 libs/libffi
+#   lkiuyu/immortalwrt@7fe583d9 → package/libs/libffi 缺失（共48项，无它）
+#   openwrt/openwrt       → package/libs/libffi 存在  ← 唯一的正确来源
+# 症状：glib2-gobject / python3 / ruby / wayland 等声明依赖 libffi，
+#       打包时报 "Package glib2-gobject is missing dependencies ... libffi.so.8"
 # ============================================================
 if [ ! -d package/libs/libffi ]; then
-  echo "==> [patch] injecting libffi package source"
-  rm -rf /tmp/owrt-pkgs
-  git clone --depth 1 --filter=blob:none --sparse https://github.com/openwrt/packages.git /tmp/owrt-pkgs 2>/dev/null || true
-  if [ -d /tmp/owrt-pkgs ]; then
-    ( cd /tmp/owrt-pkgs && git sparse-checkout set libs/libffi 2>/dev/null || true )
-  fi
-  if [ -d /tmp/owrt-pkgs/libs/libffi ]; then
-    mkdir -p package/libs
-    cp -r /tmp/owrt-pkgs/libs/libffi package/libs/
-    echo "==> [patch] libffi injected: $(ls package/libs/libffi)"
+  echo "==> [patch] injecting libffi from openwrt/openwrt core tree"
+  rm -rf /tmp/owrt-core /tmp/owrt-core.tar.gz
+  mkdir -p /tmp/owrt-core
+  if curl -fSL --retry 3 --retry-delay 2 -o /tmp/owrt-core.tar.gz \
+       https://codeload.github.com/openwrt/openwrt/tar.gz/refs/heads/main; then
+    echo "==> [patch] tarball downloaded: $(stat -c%s /tmp/owrt-core.tar.gz) bytes"
+    if tar xzf /tmp/owrt-core.tar.gz -C /tmp/owrt-core --strip-components=1 \
+         openwrt-main/package/libs/libffi; then
+      echo "==> [patch] extracted:"
+      ls -la /tmp/owrt-core/package/libs/libffi || true
+      mkdir -p package/libs
+      cp -r /tmp/owrt-core/package/libs/libffi package/libs/
+      echo "==> [patch] injected -> package/libs/libffi: $(ls package/libs/libffi)"
+      head -5 package/libs/libffi/Makefile || true
+    else
+      echo "==> [patch] ERROR: tar extraction failed"
+    fi
   else
-    echo "==> [patch] WARNING: libffi clone failed, will likely fail later"
+    echo "==> [patch] ERROR: download failed"
   fi
 else
-  echo "==> [patch] libffi already present"
+  echo "==> [patch] libffi already present at package/libs/libffi"
+fi
+
+# 校验：符号是否会被 defconfig 认出
+if [ -d package/libs/libffi ]; then
+  echo "==> [patch] OK libffi source present"
+else
+  echo "==> [patch] FAILED libffi still missing —— 编译大概率在 glib2 处失败"
 fi
